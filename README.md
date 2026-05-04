@@ -1,13 +1,11 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// Hausdorff CRM — Telegram Bot v2.1
-// סוכן AI להזנת אנשי קשר ונכסים דרך טלגרם
-// גרסה מתוקנת: תיקון באג כפתור דלג + שיפורים
+// Hausdorff CRM — Telegram Bot v2.3
+// חדש: צירוף אנשי קשר מהטלפון + שאלון מובנה
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const TelegramBot = require('node-telegram-bot-api');
 const fetch = require('node-fetch');
 
-// ── הגדרות ─────────────────────────────────────────────────────────────────────
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const CRM_API_URL = process.env.CRM_API_URL || 'https://hausdorff-crm-backend-production.up.railway.app';
@@ -18,28 +16,35 @@ const ALLOWED_USERS = process.env.ALLOWED_TELEGRAM_IDS
   ? process.env.ALLOWED_TELEGRAM_IDS.split(',').map(id => parseInt(id.trim()))
   : [];
 
-if (!TELEGRAM_TOKEN) {
-  console.error('❌ חסר TELEGRAM_BOT_TOKEN!');
-  process.exit(1);
-}
+if (!TELEGRAM_TOKEN) { console.error('❌ חסר TELEGRAM_BOT_TOKEN!'); process.exit(1); }
 
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
-console.log('🤖 הבוט עלה בהצלחה! (v2.1)');
+console.log('🤖 HAUSDORFF CRM Bot v2.3');
 
 const sessions = {};
 let crmToken = null;
 let tokenExpiry = 0;
 
-// ── שדות קריטיים ─────────────────────────────────────────────────────────────
-const CRITICAL_FIELDS = [
+// ── שאלון מובנה ──────────────────────────────────────────────────────────────
+const QUESTIONS = [
+  {
+    key: 'type',
+    check: (d) => !d.type,
+    question: '👤 מה סוג איש הקשר?',
+    options: [
+      [{ text: 'משקיע', callback_data: 'q_type_משקיע' }, { text: 'יזם', callback_data: 'q_type_יזם' }],
+      [{ text: 'שוכר פוטנציאלי', callback_data: 'q_type_שוכר פוטנציאלי' }, { text: 'רוכש פוטנציאלי', callback_data: 'q_type_רוכש פוטנציאלי' }],
+      [{ text: 'בעל נכס', callback_data: 'q_type_בעל נכס' }, { text: 'שותף מתווך', callback_data: 'q_type_שותף מתווך' }]
+    ]
+  },
   {
     key: 'preferred_property_types',
     check: (d) => !d.preferred_property_types || d.preferred_property_types.length === 0,
     question: '🏢 מה מחפש?',
     options: [
-      [{ text: 'חנות', callback_data: 'f_pt_חנות' }, { text: 'מרלו"ג', callback_data: 'f_pt_מרלוג' }],
-      [{ text: 'משרד', callback_data: 'f_pt_משרד' }, { text: 'קרקע', callback_data: 'f_pt_קרקע' }],
-      [{ text: 'מבנה תעשייה', callback_data: 'f_pt_מבנה תעשייה' }, { text: 'דלג ⏭️', callback_data: 'f_skip' }]
+      [{ text: 'חנות', callback_data: 'q_pt_חנות' }, { text: 'מרלו"ג', callback_data: 'q_pt_מרלוג' }],
+      [{ text: 'משרד', callback_data: 'q_pt_משרד' }, { text: 'קרקע', callback_data: 'q_pt_קרקע' }],
+      [{ text: 'מבנה תעשייה', callback_data: 'q_pt_מבנה תעשייה' }, { text: 'דלג ⏭️', callback_data: 'q_skip' }]
     ]
   },
   {
@@ -47,10 +52,10 @@ const CRITICAL_FIELDS = [
     check: (d) => !d.preferred_areas || d.preferred_areas.length === 0,
     question: '📍 באיזה אזור?',
     options: [
-      [{ text: 'תל אביב', callback_data: 'f_ar_תל אביב' }, { text: 'ירושלים', callback_data: 'f_ar_ירושלים' }],
-      [{ text: 'באר שבע', callback_data: 'f_ar_באר שבע' }, { text: 'חיפה', callback_data: 'f_ar_חיפה' }],
-      [{ text: 'מרכז', callback_data: 'f_ar_מרכז' }, { text: 'דרום', callback_data: 'f_ar_דרום' }],
-      [{ text: 'אחר ✏️', callback_data: 'f_ar_custom' }, { text: 'דלג ⏭️', callback_data: 'f_skip' }]
+      [{ text: 'תל אביב', callback_data: 'q_ar_תל אביב' }, { text: 'ירושלים', callback_data: 'q_ar_ירושלים' }],
+      [{ text: 'באר שבע', callback_data: 'q_ar_באר שבע' }, { text: 'חיפה', callback_data: 'q_ar_חיפה' }],
+      [{ text: 'מרכז', callback_data: 'q_ar_מרכז' }, { text: 'דרום', callback_data: 'q_ar_דרום' }],
+      [{ text: 'אחר ✏️', callback_data: 'q_ar_custom' }, { text: 'דלג ⏭️', callback_data: 'q_skip' }]
     ]
   },
   {
@@ -58,17 +63,31 @@ const CRITICAL_FIELDS = [
     check: (d) => !d.budget_max || d.budget_max === 0,
     question: '💰 תקציב?',
     options: [
-      [{ text: 'עד 5K/חודש', callback_data: 'f_bg_5000' }, { text: 'עד 10K/חודש', callback_data: 'f_bg_10000' }],
-      [{ text: 'עד 20K/חודש', callback_data: 'f_bg_20000' }, { text: 'עד 50K/חודש', callback_data: 'f_bg_50000' }],
-      [{ text: 'מעל 50K', callback_data: 'f_bg_100000' }, { text: 'רכישה', callback_data: 'f_bg_sale' }],
-      [{ text: 'דלג ⏭️', callback_data: 'f_skip' }]
+      [{ text: 'עד 5K/חודש', callback_data: 'q_bg_5000' }, { text: 'עד 10K/חודש', callback_data: 'q_bg_10000' }],
+      [{ text: 'עד 20K/חודש', callback_data: 'q_bg_20000' }, { text: 'עד 50K/חודש', callback_data: 'q_bg_50000' }],
+      [{ text: 'סכום אחר ✏️', callback_data: 'q_bg_custom' }, { text: 'רכישה', callback_data: 'q_bg_sale' }],
+      [{ text: 'דלג ⏭️', callback_data: 'q_skip' }]
     ]
   },
   {
     key: 'email',
     check: (d) => !d.email,
     question: '📧 יש אימייל? כתוב או לחץ דלג',
-    options: [[{ text: 'דלג ⏭️', callback_data: 'f_skip' }]],
+    options: [[{ text: 'אין / דלג ⏭️', callback_data: 'q_skip' }]],
+    freeText: true
+  },
+  {
+    key: 'company',
+    check: (d) => !d.company,
+    question: '🏗️ שם חברה? כתוב או לחץ דלג',
+    options: [[{ text: 'דלג ⏭️', callback_data: 'q_skip' }]],
+    freeText: true
+  },
+  {
+    key: 'notes',
+    check: (d) => !d.notes,
+    question: '📝 הערות? כתוב או לחץ דלג',
+    options: [[{ text: 'דלג ⏭️', callback_data: 'q_skip' }]],
     freeText: true
   }
 ];
@@ -90,7 +109,7 @@ async function getCrmToken() {
     const data = await res.json();
     if (data.token) { crmToken = data.token; tokenExpiry = Date.now() + 6e8; return crmToken; }
     throw new Error(data.error || 'login failed');
-  } catch (err) { console.error('CRM login error:', err.message); return null; }
+  } catch (err) { console.error('CRM login:', err.message); return null; }
 }
 
 async function crmRequest(method, endpoint, body) {
@@ -103,7 +122,7 @@ async function crmRequest(method, endpoint, body) {
 
 function formatNumber(n) { return n.toLocaleString('he-IL'); }
 
-// ── פרסור ─────────────────────────────────────────────────────────────────────
+// ── פרסור טקסט חופשי ─────────────────────────────────────────────────────────
 
 async function parseWithAI(text, mode) {
   if (!ANTHROPIC_API_KEY) return parseBasic(text, mode);
@@ -121,17 +140,17 @@ async function parseWithAI(text, mode) {
     });
     const data = await res.json();
     return JSON.parse((data.content?.[0]?.text || '').replace(/```json\s*/g, '').replace(/```\s*/g, '').trim());
-  } catch (err) { console.error('AI error:', err.message); return parseBasic(text, mode); }
+  } catch (err) { console.error('AI:', err.message); return parseBasic(text, mode); }
 }
 
 function parseBasic(text, mode) {
   if (mode !== 'contact') return { address:'',city:'',neighborhood:'',type:'חנות',deal_type:'השכרה',price:0,area:0,description:text,status:'זמין' };
   const phone = text.match(/0\d{1,2}[-\s]?\d{7,8}/)?.[0]?.replace(/\s/g,'') || '';
   const email = text.match(/[\w.+-]+@[\w-]+\.[\w.]+/)?.[0] || '';
-  let type = 'רוכש פוטנציאלי';
+  let type = '';
   if (/משקיע/.test(text)) type='משקיע'; else if (/שוכר/.test(text)) type='שוכר פוטנציאלי';
   else if (/בעל.?נכס|בעלים/.test(text)) type='בעל נכס'; else if (/מתווך/.test(text)) type='שותף מתווך';
-  else if (/יזם/.test(text)) type='יזם';
+  else if (/יזם/.test(text)) type='יזם'; else if (/רוכש/.test(text)) type='רוכש פוטנציאלי';
   let budget_max = 0;
   const bm = text.match(/תקציב[^\d]*(\d+(?:\.\d+)?)\s*(M|מיליון|K|אלף)?/i);
   if (bm) { budget_max = parseFloat(bm[1]); if (/M|מיליון/i.test(bm[2])) budget_max*=1e6; else if (/K|אלף/i.test(bm[2])) budget_max*=1e3; }
@@ -148,21 +167,21 @@ function parseBasic(text, mode) {
     .replace(/תקציב[^\n]*/i,'').replace(/משקיע|שוכר|רוכש|בעל נכס|מתווך|יזם/g,'').replace(/מחפש[^\n]*/i,'').replace(/חברת\s+\S+/g,'').trim();
   const np = nameClean.split(/\s+/).filter(w=>w.length>1).slice(0,2);
   return { first_name:np[0]||'', last_name:np[1]||'', phone, email, type, company:companyMatch?companyMatch[1]:'', role:'',
-    budget_min:0, budget_max, preferred_areas:areas, preferred_property_types:propTypes, desired_yield:0, source:'פנייה ישירה', notes:text };
+    budget_min:0, budget_max, preferred_areas:areas, preferred_property_types:propTypes, desired_yield:0, source:'פנייה ישירה', notes:'' };
 }
 
 // ── פורמט ─────────────────────────────────────────────────────────────────────
 
 function formatContact(d) {
-  let m = `👤 *איש קשר חדש*\n\n*שם:* ${d.first_name} ${d.last_name}\n`;
+  let m = `👤 *איש קשר*\n\n*שם:* ${d.first_name} ${d.last_name}\n`;
   if (d.phone) m += `*טלפון:* ${d.phone}\n`;
   if (d.email) m += `*אימייל:* ${d.email}\n`;
-  m += `*סוג:* ${d.type}\n`;
+  if (d.type) m += `*סוג:* ${d.type}\n`;
   if (d.company) m += `*חברה:* ${d.company}\n`;
-  if (d.role) m += `*תפקיד:* ${d.role}\n`;
   if (d.budget_max > 0) m += `*תקציב:* עד ${formatNumber(d.budget_max)} ₪\n`;
   if (d.preferred_areas?.length) m += `*אזורים:* ${d.preferred_areas.join(', ')}\n`;
   if (d.preferred_property_types?.length) m += `*סוגי נכסים:* ${d.preferred_property_types.join(', ')}\n`;
+  if (d.notes) m += `*הערות:* ${d.notes}\n`;
   return m;
 }
 
@@ -176,22 +195,42 @@ function formatProperty(d) {
   return m;
 }
 
-// ── שאלות חכמות (עם תמיכה בדילוג) ───────────────────────────────────────────
+// ── שאלון חכם ─────────────────────────────────────────────────────────────────
 
-function getNextMissing(data, skipped) {
-  const skippedKeys = skipped || [];
-  for (const f of CRITICAL_FIELDS) {
-    if (f.check(data) && !skippedKeys.includes(f.key)) return f;
+function getNextQuestion(data, skipped) {
+  const s = skipped || [];
+  for (const q of QUESTIONS) {
+    if (q.check(data) && !s.includes(q.key)) return q;
   }
   return null;
 }
 
 function askNext(chatId, session) {
-  const missing = getNextMissing(session.data, session.skipped);
-  if (!missing) { saveToCRM(chatId, session); return; }
-  session.waitingFor = missing.key;
-  session.freeText = missing.freeText || false;
-  bot.sendMessage(chatId, missing.question, { reply_markup: { inline_keyboard: missing.options } });
+  const next = getNextQuestion(session.data, session.skipped);
+  if (!next) {
+    // סיום שאלון — מציג סיכום לאישור
+    bot.sendMessage(chatId, formatContact(session.data) + '\n*לשמור ב-CRM?*', {
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: [[
+        { text: '✅ שמור', callback_data: 'final_save' },
+        { text: '❌ ביטול', callback_data: 'cancel' }
+      ]]}
+    });
+    return;
+  }
+  session.waitingFor = next.key;
+  session.freeText = next.freeText || false;
+  bot.sendMessage(chatId, next.question, { reply_markup: { inline_keyboard: next.options } });
+}
+
+function doSkip(chatId, session) {
+  if (!session.skipped) session.skipped = [];
+  if (session.waitingFor && !session.skipped.includes(session.waitingFor)) {
+    session.skipped.push(session.waitingFor);
+  }
+  session.waitingFor = null;
+  session.freeText = false;
+  askNext(chatId, session);
 }
 
 async function saveToCRM(chatId, session) {
@@ -208,7 +247,7 @@ async function saveToCRM(chatId, session) {
         desired_yield: d.desired_yield||0, notes: d.notes||'', status:'פעיל'
       });
       if (result.id) {
-        bot.sendMessage(chatId, `✅ *${d.first_name} ${d.last_name}* נוסף ל-CRM!\n\n` + formatContact(d), { parse_mode:'Markdown' });
+        bot.sendMessage(chatId, `✅ *${d.first_name} ${d.last_name}* נוסף ל-CRM!`, { parse_mode:'Markdown' });
       } else throw new Error(result.error||'שגיאה');
     } else {
       const result = await crmRequest('POST', '/api/properties', {
@@ -230,12 +269,11 @@ async function saveToCRM(chatId, session) {
 bot.onText(/\/start/, (msg) => {
   if (!isAllowed(msg.from.id)) return;
   bot.sendMessage(msg.chat.id,
-    `🏠 *HAUSDORFF CRM Bot v2.1*\n\n` +
-    `שלח הודעה חופשית ואני אוסיף ל-CRM.\n\n` +
-    `*דוגמאות:*\n` +
-    `_"יוסי כהן 054-1234567 משקיע תקציב 5M חנויות באר שבע"_\n` +
-    `_"דני 052-9876543 שוכר"_ → אשאל מה חסר\n` +
-    `_"/נכס חנות 85 מר גני אביב 12K"_\n\n` +
+    `🏠 *HAUSDORFF CRM Bot v2.3*\n\n` +
+    `*3 דרכים להוסיף איש קשר:*\n\n` +
+    `📱 *צרף איש קשר מהטלפון* → שאלון מובנה\n` +
+    `💬 *הודעה חופשית* → _"יוסי 054-1234567 משקיע 5M חנויות באר שבע"_\n` +
+    `🏢 *נכס חדש* → _"/נכס חנות 85 מר גני אביב 12K"_\n\n` +
     `ככל שתכתוב יותר → פחות שאלות 😊`,
     { parse_mode: 'Markdown' });
 });
@@ -244,15 +282,65 @@ bot.onText(/\/help/, (msg) => {
   if (!isAllowed(msg.from.id)) return;
   bot.sendMessage(msg.chat.id,
     `📖 *עזרה*\n\n` +
-    `*מינימום:* _"שם + טלפון + סוג"_ → הבוט ישאל השאר\n` +
-    `*מקסימום:* _"שם טלפון סוג חברה תקציב אזור סוג-נכס אימייל"_ → שמירה ישרה\n\n` +
-    `*נכס:* התחל עם /נכס\n` +
-    `*דלג:* תמיד אפשר לדלג על שאלה`,
+    `📱 *צירוף איש קשר:* שלח איש קשר מהטלפון (כפתור האטב → איש קשר)\n` +
+    `💬 *הודעה:* _"שם + טלפון + סוג"_ (מינימום) עד הודעה מלאה\n` +
+    `🏢 *נכס:* _"/נכס + פרטים"_\n\n` +
+    `תמיד אפשר ללחוץ דלג או להקליד "דלג"`,
     { parse_mode: 'Markdown' });
 });
 
 bot.onText(/\/id/, (msg) => {
   bot.sendMessage(msg.chat.id, `🆔 מזהה: \`${msg.from.id}\``, { parse_mode:'Markdown' });
+});
+
+// ── צירוף איש קשר מהטלפון ────────────────────────────────────────────────────
+
+bot.on('contact', (msg) => {
+  if (!isAllowed(msg.from.id)) return;
+  const chatId = msg.chat.id;
+  const contact = msg.contact;
+
+  // חילוץ פרטים מאיש הקשר המצורף
+  const firstName = contact.first_name || '';
+  const lastName = contact.last_name || '';
+  let phone = contact.phone_number || '';
+
+  // פורמט טלפון ישראלי
+  if (phone.startsWith('+972')) phone = '0' + phone.slice(4);
+  else if (phone.startsWith('972')) phone = '0' + phone.slice(3);
+
+  // יצירת session עם הנתונים הבסיסיים
+  sessions[chatId] = {
+    mode: 'contact',
+    data: {
+      first_name: firstName,
+      last_name: lastName,
+      phone: phone,
+      email: '',
+      type: '',
+      company: '',
+      role: '',
+      budget_min: 0,
+      budget_max: 0,
+      preferred_areas: [],
+      preferred_property_types: [],
+      desired_yield: 0,
+      source: 'פנייה ישירה',
+      notes: ''
+    },
+    skipped: []
+  };
+
+  bot.sendMessage(chatId,
+    `📱 *איש קשר התקבל:*\n\n` +
+    `*שם:* ${firstName} ${lastName}\n` +
+    `*טלפון:* ${phone}\n\n` +
+    `בוא נשלים כמה פרטים:`,
+    { parse_mode: 'Markdown' }
+  );
+
+  // מתחיל את השאלון — השאלה הראשונה: סוג איש קשר
+  askNext(chatId, sessions[chatId]);
 });
 
 // ── נכס ───────────────────────────────────────────────────────────────────────
@@ -267,7 +355,7 @@ bot.onText(/^\/נכס\s+(.+)/s, async (msg, match) => {
     bot.sendMessage(chatId, formatProperty(parsed) + '\n*נכון?*', {
       parse_mode:'Markdown',
       reply_markup: { inline_keyboard: [[
-        { text: '✅ שמור', callback_data: 'confirm_save' },
+        { text: '✅ שמור', callback_data: 'final_save' },
         { text: '❌ ביטול', callback_data: 'cancel' }
       ]]}
     });
@@ -277,44 +365,104 @@ bot.onText(/^\/נכס\s+(.+)/s, async (msg, match) => {
 // ── הודעה חופשית ──────────────────────────────────────────────────────────────
 
 bot.on('message', async (msg) => {
-  if (!msg.text || msg.text.startsWith('/')) return;
+  // דלג על פקודות, אנשי קשר מצורפים, ותמונות
+  if (!msg.text || msg.text.startsWith('/') || msg.contact) return;
   if (!isAllowed(msg.from.id)) return;
   const chatId = msg.chat.id;
   const text = msg.text.trim();
-  if (text.length < 3) return;
+  if (text.length < 2) return;
 
-  // תשובה בטקסט חופשי לשאלה (אימייל / אזור מותאם)
   const session = sessions[chatId];
-  if (session && session.freeText && session.waitingFor) {
+
+  // ── תשובה לשאלה פעילה ──
+  if (session && session.waitingFor) {
+
+    // "דלג" בטקסט = דילוג
+    if (/^דלג$/i.test(text)) {
+      doSkip(chatId, session);
+      return;
+    }
+
+    // תשובה לאימייל
     if (session.waitingFor === 'email') {
       const em = text.match(/[\w.+-]+@[\w-]+\.[\w.]+/);
-      session.data.email = em ? em[0] : text;
-      bot.sendMessage(chatId, `📧 ${session.data.email}`);
-    } else if (session.waitingFor === 'preferred_areas') {
+      if (em) {
+        session.data.email = em[0];
+        bot.sendMessage(chatId, `📧 נשמר: ${em[0]}`);
+      } else {
+        bot.sendMessage(chatId, '🤔 לא נראה כאימייל. נסה שוב או לחץ דלג.');
+        return;
+      }
+      session.waitingFor = null; session.freeText = false;
+      askNext(chatId, session);
+      return;
+    }
+
+    // תשובה לאזור מותאם
+    if (session.waitingFor === 'preferred_areas' && session.freeText) {
       session.data.preferred_areas = [text];
       bot.sendMessage(chatId, `📍 ${text}`);
+      session.waitingFor = null; session.freeText = false;
+      askNext(chatId, session);
+      return;
     }
-    session.waitingFor = null; session.freeText = false;
-    askNext(chatId, session);
-    return;
+
+    // תשובה לתקציב מותאם
+    if (session.waitingFor === 'budget_max' && session.freeText) {
+      const num = text.replace(/[,₪\s]/g, '');
+      let amount = parseFloat(num) || 0;
+      if (/M|מיליון/i.test(text)) amount *= 1e6;
+      else if (/K|אלף/i.test(text)) amount *= 1e3;
+      if (amount > 0) {
+        session.data.budget_max = amount;
+        bot.sendMessage(chatId, `💰 תקציב: ${formatNumber(amount)} ₪`);
+        session.waitingFor = null; session.freeText = false;
+        askNext(chatId, session);
+      } else {
+        bot.sendMessage(chatId, '🤔 כתוב מספר, למשל: 15000 או 5M או 80K');
+      }
+      return;
+    }
+
+    // תשובה לחברה
+    if (session.waitingFor === 'company' && session.freeText) {
+      session.data.company = text;
+      bot.sendMessage(chatId, `🏗️ ${text}`);
+      session.waitingFor = null; session.freeText = false;
+      askNext(chatId, session);
+      return;
+    }
+
+    // תשובה להערות
+    if (session.waitingFor === 'notes' && session.freeText) {
+      session.data.notes = text;
+      bot.sendMessage(chatId, `📝 נשמר`);
+      session.waitingFor = null; session.freeText = false;
+      askNext(chatId, session);
+      return;
+    }
+  }
+
+  // ── הודעה חדשה — איש קשר ──
+  if (session && !session.waitingFor) {
+    delete sessions[chatId];
   }
 
   bot.sendMessage(chatId, '⏳ מעבד...');
   try {
     const parsed = await parseWithAI(text, 'contact');
     if (!parsed.first_name && !parsed.last_name) {
-      bot.sendMessage(chatId, '🤔 לא זיהיתי שם. נסה: _"יוסי כהן 054-1234567 משקיע"_', { parse_mode:'Markdown' });
+      bot.sendMessage(chatId, '🤔 לא זיהיתי שם. נסה: _"יוסי כהן 054-1234567 משקיע"_\nאו צרף איש קשר מהטלפון 📱', { parse_mode:'Markdown' });
       return;
     }
     sessions[chatId] = { mode:'contact', data:parsed, skipped:[] };
 
-    const hasMissing = !!getNextMissing(parsed, []);
-
+    const hasMissing = !!getNextQuestion(parsed, []);
     const buttons = hasMissing
       ? [[{ text: '✅ אישור + השלמת פרטים', callback_data: 'confirm_ask' },
-          { text: '✅ שמור ישר', callback_data: 'confirm_save' }],
+          { text: '✅ שמור ישר', callback_data: 'final_save' }],
          [{ text: '❌ ביטול', callback_data: 'cancel' }]]
-      : [[{ text: '✅ שמור', callback_data: 'confirm_save' },
+      : [[{ text: '✅ שמור', callback_data: 'final_save' },
           { text: '❌ ביטול', callback_data: 'cancel' }]];
 
     bot.sendMessage(chatId, formatContact(parsed) + '\n*הנתונים נכונים?*', {
@@ -331,13 +479,15 @@ bot.on('callback_query', async (query) => {
   const action = query.data;
   const session = sessions[chatId];
 
-  if (action === 'cancel') { delete sessions[chatId]; bot.answerCallbackQuery(query.id); bot.sendMessage(chatId, '🚫 בוטל.'); return; }
-  if (!session) { bot.answerCallbackQuery(query.id, { text:'אין נתונים' }); return; }
+  bot.answerCallbackQuery(query.id);
 
+  if (action === 'cancel') { delete sessions[chatId]; bot.sendMessage(chatId, '🚫 בוטל.'); return; }
+  if (!session) { bot.sendMessage(chatId, '⚠️ שלח הודעה חדשה או צרף איש קשר.'); return; }
+
+  // אישור + שאלות
   if (action === 'confirm_ask') {
-    bot.answerCallbackQuery(query.id);
-    const missing = getNextMissing(session.data, session.skipped);
-    if (missing) {
+    const next = getNextQuestion(session.data, session.skipped);
+    if (next) {
       bot.sendMessage(chatId, '👍 עוד כמה שאלות קצרות:');
       askNext(chatId, session);
     } else {
@@ -346,48 +496,72 @@ bot.on('callback_query', async (query) => {
     return;
   }
 
-  if (action === 'confirm_save') { bot.answerCallbackQuery(query.id); saveToCRM(chatId, session); return; }
+  // שמירה סופית
+  if (action === 'final_save') { saveToCRM(chatId, session); return; }
 
-  // דילוג — שומר את השדה שדולגו כדי לא לשאול שוב
-  if (action === 'f_skip') {
-    bot.answerCallbackQuery(query.id, { text: 'דילוג ⏭️' });
-    if (!session.skipped) session.skipped = [];
-    if (session.waitingFor) session.skipped.push(session.waitingFor);
+  // דילוג
+  if (action === 'q_skip') {
+    doSkip(chatId, session);
+    return;
+  }
+
+  // סוג איש קשר
+  if (action.startsWith('q_type_')) {
+    session.data.type = action.slice(7);
     session.waitingFor = null;
-    session.freeText = false;
     askNext(chatId, session);
     return;
   }
 
   // סוג נכס
-  if (action.startsWith('f_pt_')) {
+  if (action.startsWith('q_pt_')) {
     const v = action.slice(5);
     if (!session.data.preferred_property_types) session.data.preferred_property_types = [];
     session.data.preferred_property_types.push(v);
-    bot.answerCallbackQuery(query.id, { text:v }); session.waitingFor=null; askNext(chatId,session); return;
+    session.waitingFor = null;
+    askNext(chatId, session);
+    return;
   }
 
   // אזור
-  if (action.startsWith('f_ar_')) {
+  if (action.startsWith('q_ar_')) {
     const v = action.slice(5);
-    if (v === 'custom') { bot.answerCallbackQuery(query.id); session.freeText=true; bot.sendMessage(chatId, '✏️ כתוב אזור/עיר:'); return; }
+    if (v === 'custom') {
+      session.freeText = true;
+      bot.sendMessage(chatId, '✏️ כתוב אזור/עיר:');
+      return;
+    }
     if (!session.data.preferred_areas) session.data.preferred_areas = [];
     session.data.preferred_areas.push(v);
-    bot.answerCallbackQuery(query.id, { text:v }); session.waitingFor=null; askNext(chatId,session); return;
+    session.waitingFor = null;
+    askNext(chatId, session);
+    return;
   }
 
   // תקציב
-  if (action.startsWith('f_bg_')) {
+  if (action.startsWith('q_bg_')) {
     const v = action.slice(5);
-    if (v === 'sale') { session.data.budget_max = -1; session.data.notes = (session.data.notes||'') + ' | רכישה'; }
-    else session.data.budget_max = parseInt(v);
-    bot.answerCallbackQuery(query.id); session.waitingFor=null; askNext(chatId,session); return;
+    if (v === 'sale') {
+      session.data.budget_max = -1;
+      session.data.notes = (session.data.notes||'') + (session.data.notes ? ' | ' : '') + 'רכישה';
+      session.waitingFor = null;
+      askNext(chatId, session);
+      return;
+    }
+    if (v === 'custom') {
+      session.freeText = true;
+      bot.sendMessage(chatId, '✏️ כתוב סכום (למשל: 15000, 80K, 5M, 50 מיליון):');
+      return;
+    }
+    session.data.budget_max = parseInt(v);
+    session.waitingFor = null;
+    askNext(chatId, session);
+    return;
   }
 });
 
-bot.on('polling_error', (err) => { if (!err.message?.includes('ETELEGRAM')) console.error('Poll:', err.message); });
+bot.on('polling_error', (err) => { if (!err.message?.includes('ETELEGRAM') && !err.message?.includes('409')) console.error('Poll:', err.message); });
 process.on('uncaughtException', (err) => console.error('Error:', err));
 
-console.log('🤖 HAUSDORFF CRM Bot v2.1 מוכן!');
 console.log(`📡 ${CRM_API_URL}`);
 console.log(`🧠 ${ANTHROPIC_API_KEY ? 'Claude AI' : 'Regex בסיסי'}`);
