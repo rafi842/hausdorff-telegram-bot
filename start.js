@@ -2,8 +2,8 @@
 // modules/start.js — פקודות בסיס
 // ═══════════════════════════════════════════════════════════════════════
 
-const { isAllowed } = require('../helpers');
-const config = require('../config');
+const { isAllowed } = require('./helpers');
+const config = require('./config');
 
 function register(bot) {
   bot.onText(/\/start/, msg => {

@@ -2,9 +2,9 @@
 // modules/tasks.js — משימות (מותאם ל-CRM)
 // ═══════════════════════════════════════════════════════════════════════
 
-const { removeKB } = require('../helpers');
-const crm = require('../crm');
-const Q = require('../questionnaire');
+const { removeKB } = require('./helpers');
+const crm = require('./crm');
+const Q = require('./questionnaire');
 
 const QUESTIONS = [
   { code: 'tt', dbKey: 'title', check: d => !d.title,

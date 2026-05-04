@@ -2,9 +2,9 @@
 // modules/companies.js — חברות
 // ═══════════════════════════════════════════════════════════════════════
 
-const { removeKB } = require('../helpers');
-const crm = require('../crm');
-const Q = require('../questionnaire');
+const { removeKB } = require('./helpers');
+const crm = require('./crm');
+const Q = require('./questionnaire');
 
 const QUESTIONS = [
   { code: 'nm', dbKey: 'name', check: d => !d.name, question: '🏗️ שם החברה?', buttons: [], freeText: true },

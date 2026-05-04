@@ -13,13 +13,13 @@ const bot = new TelegramBot(config.TELEGRAM_TOKEN, { polling: true });
 const sessions = {};
 
 // ── טעינת מודולים ─────────────────────────────────────────────────────
-const startMod = require('./modules/start');
+const startMod = require('./start');
 startMod.register(bot);
 
-const contactsMod = require('./modules/contacts').register(bot, sessions);
-const propertiesMod = require('./modules/properties').register(bot, sessions);
-const tasksMod = require('./modules/tasks').register(bot, sessions);
-const companiesMod = require('./modules/companies').register(bot, sessions);
+const contactsMod = require('./contacts').register(bot, sessions);
+const propertiesMod = require('./properties').register(bot, sessions);
+const tasksMod = require('./tasks').register(bot, sessions);
+const companiesMod = require('./companies').register(bot, sessions);
 
 // ── תפריט ראשי ────────────────────────────────────────────────────────
 const MAIN_MENU = [[

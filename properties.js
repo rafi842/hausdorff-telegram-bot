@@ -2,10 +2,10 @@
 // modules/properties.js — נכסים (מותאם ל-CRM)
 // ═══════════════════════════════════════════════════════════════════════
 
-const { removeKB, fmtProperty } = require('../helpers');
-const { parseProperty } = require('../parser');
-const crm = require('../crm');
-const Q = require('../questionnaire');
+const { removeKB, fmtProperty } = require('./helpers');
+const { parseProperty } = require('./parser');
+const crm = require('./crm');
+const Q = require('./questionnaire');
 
 const QUESTIONS = [
   { code: 'ct', dbKey: 'city', check: d => !d.city, question: '📍 עיר?', buttons: [

@@ -4,10 +4,10 @@
 //        שטח, תשואה, סוג עסקה, מטרה, אימייל, הערות
 // ═══════════════════════════════════════════════════════════════════════
 
-const { isAllowed, removeKB, formatPhone, fmtContact } = require('../helpers');
-const { parseContact } = require('../parser');
-const crm = require('../crm');
-const Q = require('../questionnaire');
+const { isAllowed, removeKB, formatPhone, fmtContact } = require('./helpers');
+const { parseContact } = require('./parser');
+const crm = require('./crm');
+const Q = require('./questionnaire');
 
 const QUESTIONS = [
   {
