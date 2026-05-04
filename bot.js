@@ -1,25 +1,27 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// bot.js — HAUSDORFF CRM Bot v4.0
-// ניתוב חכם: הבוט מזהה מה רוצים ומנתב למודול הנכון
+// bot.js — HAUSDORFF CRM Bot v5.0
+// ניתוב חכם + ברכות + תזכורות + כל הישויות
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const TelegramBot = require('node-telegram-bot-api');
 const config = require('./config');
-const { isAllowed, removeKB } = require('./helpers');
+const { isAllowed, removeKB, isGreeting } = require('./helpers');
+const reminders = require('./reminders');
 
 if (!config.TELEGRAM_TOKEN) { console.error('❌ חסר TELEGRAM_BOT_TOKEN!'); process.exit(1); }
 
 const bot = new TelegramBot(config.TELEGRAM_TOKEN, { polling: true });
 const sessions = {};
 
-// ── טעינת מודולים ─────────────────────────────────────────────────────
-const startMod = require('./start');
-startMod.register(bot);
-
+// ── מודולים ───────────────────────────────────────────────────────────
+const startMod = require('./start'); startMod.register(bot);
 const contactsMod = require('./contacts').register(bot, sessions);
 const propertiesMod = require('./properties').register(bot, sessions);
 const tasksMod = require('./tasks').register(bot, sessions);
 const companiesMod = require('./companies').register(bot, sessions);
+
+// ── תזכורות ───────────────────────────────────────────────────────────
+reminders.start(bot);
 
 // ── תפריט ראשי ────────────────────────────────────────────────────────
 const MAIN_MENU = [[
@@ -30,17 +32,21 @@ const MAIN_MENU = [[
   { text: '🏗️ חברה', callback_data: 'MENU:company' }
 ]];
 
-function showMainMenu(chatId, text) {
-  bot.sendMessage(chatId, text || 'מה תרצה לעשות?', {
+async function showMainMenu(chatId, text) {
+  const sent = await bot.sendMessage(chatId, text || '👋 מה תרצה לעשות?', {
     parse_mode: 'Markdown',
     reply_markup: { inline_keyboard: MAIN_MENU }
   });
+  sessions[chatId] = { lastMsg: sent.message_id };
 }
 
-// ── טיפול בהודעות ─────────────────────────────────────────────────────
+// ── הודעות ────────────────────────────────────────────────────────────
 bot.on('message', async msg => {
   if (!isAllowed(msg.from.id)) return;
   const chatId = msg.chat.id;
+
+  // רישום לתזכורות
+  reminders.registerChat(chatId);
 
   // פקודות
   if (msg.text && msg.text.startsWith('/')) return;
@@ -67,37 +73,45 @@ bot.on('message', async msg => {
     if (handled) return;
   }
 
+  // ── ברכות ──
+  if (isGreeting(text)) {
+    showMainMenu(chatId, '👋 שלום! מה תרצה לעשות?');
+    return;
+  }
+
   // ── זיהוי כוונה אוטומטי ──
-  // אם ההודעה מכילה מספר טלפון → כנראה איש קשר
+
+  // טלפון → איש קשר
   if (/0\d{1,2}[-\s]?\d{7,8}/.test(text)) {
     contactsMod.startFromText(chatId, text);
     return;
   }
 
-  // אם מתחיל ב"משימה" / "תזכורת" / "לעשות"
-  if (/^(משימה|תזכורת|לעשות|להתקשר|לשלוח|task)/i.test(text)) {
+  // משימה / תזכורת
+  if (/^(משימה|תזכורת|לעשות|להתקשר|לשלוח|task|todo)/i.test(text)) {
     tasksMod.startFromText(chatId, text);
     return;
   }
 
-  // אם מתחיל ב"נכס" / "חנות" / "מרלוג" / "משרד"
-  if (/^(נכס|חנות|מרלוג|משרד|קרקע|מבנה)/i.test(text)) {
+  // נכס / חנות / מרלוג
+  if (/^(נכס|חנות|מרלוג|מרלו"ג|משרד|קרקע|מבנה|מרכז מסחרי)/i.test(text)) {
     propertiesMod.startFromText(chatId, text);
     return;
   }
 
-  // אם מתחיל ב"חברה" / "חב'"
-  if (/^(חברה|חב')/i.test(text)) {
+  // חברה
+  if (/^(חברה|חברת|חב')/i.test(text)) {
     companiesMod.startFromText(chatId, text);
     return;
   }
 
-  // לא זיהה כוונה → הצג תפריט
-  showMainMenu(chatId, `📝 *"${text.slice(0, 30)}${text.length > 30 ? '...' : ''}"*\n\nמה תרצה לעשות עם זה?`);
-  sessions[chatId] = { pendingText: text };
+  // לא זיהה → תפריט
+  showMainMenu(chatId, `📝 *"${text.slice(0, 40)}${text.length > 40 ? '...' : ''}"*\n\nמה תרצה לעשות?`);
+  if (sessions[chatId]) sessions[chatId].pendingText = text;
+  else sessions[chatId] = { pendingText: text };
 });
 
-// ── טיפול בכפתורים ────────────────────────────────────────────────────
+// ── כפתורים ───────────────────────────────────────────────────────────
 bot.on('callback_query', async query => {
   const chatId = query.message.chat.id;
   const msgId = query.message.message_id;
@@ -106,7 +120,6 @@ bot.on('callback_query', async query => {
 
   bot.answerCallbackQuery(query.id);
 
-  // ביטול
   if (action === 'CANCEL') {
     removeKB(bot, chatId, msgId);
     delete sessions[chatId];
@@ -118,27 +131,25 @@ bot.on('callback_query', async query => {
   if (action.startsWith('MENU:')) {
     removeKB(bot, chatId, msgId);
     const choice = action.slice(5);
-    const pendingText = s?.pendingText || '';
+    const pending = s?.pendingText || '';
 
     if (choice === 'contact') {
-      if (pendingText) contactsMod.startFromText(chatId, pendingText);
+      if (pending) contactsMod.startFromText(chatId, pending);
       else contactsMod.startEmpty(chatId);
     } else if (choice === 'property') {
-      if (pendingText) propertiesMod.startFromText(chatId, pendingText);
+      if (pending) propertiesMod.startFromText(chatId, pending);
       else propertiesMod.startEmpty(chatId);
     } else if (choice === 'task') {
-      if (pendingText) tasksMod.startFromText(chatId, pendingText);
+      if (pending) tasksMod.startFromText(chatId, pending);
       else tasksMod.startEmpty(chatId);
     } else if (choice === 'company') {
-      if (pendingText) companiesMod.startFromText(chatId, pendingText);
+      if (pending) companiesMod.startFromText(chatId, pending);
       else companiesMod.startEmpty(chatId);
     }
     return;
   }
 
   if (!s) { removeKB(bot, chatId, msgId); return; }
-
-  // כפתור ישן
   if (s.lastMsg && msgId !== s.lastMsg) { removeKB(bot, chatId, msgId); return; }
 
   // ניתוב לפי מודול
@@ -159,3 +170,4 @@ console.log(`🤖 HAUSDORFF CRM Bot v${config.BOT_VERSION}`);
 console.log(`📡 ${config.CRM_API_URL}`);
 console.log(`🧠 ${config.ANTHROPIC_API_KEY ? 'Claude AI' : 'Regex'}`);
 console.log(`📦 מודולים: contacts, properties, tasks, companies`);
+console.log(`⏰ תזכורות: פעיל`);
