@@ -1,11 +1,8 @@
 {
   "name": "hausdorff-crm-bot",
-  "version": "4.0.0",
-  "description": "Hausdorff CRM Telegram Bot — modular architecture",
+  "version": "6.0.0",
   "main": "bot.js",
-  "scripts": {
-    "start": "node bot.js"
-  },
+  "scripts": { "start": "node bot.js" },
   "dependencies": {
     "node-telegram-bot-api": "^0.66.0",
     "node-fetch": "^2.7.0"

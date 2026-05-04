@@ -1,7 +1,6 @@
 // ═══════════════════════════════════════════════════════════════════════
-// modules/contacts.js — אנשי קשר (מותאם מלא ל-CRM)
-// שדות: שם, טלפון, סוג, מקור, חברה, תקציב, אזורים, סוגי נכסים,
-//        שטח, תשואה, סוג עסקה, מטרה, אימייל, הערות
+// contacts.js — אנשי קשר v6
+// + הצעה לפתוח רישום נכס כשנשמר "בעל נכס"
 // ═══════════════════════════════════════════════════════════════════════
 
 const { isAllowed, removeKB, formatPhone, fmtContact } = require('./helpers');
@@ -30,7 +29,7 @@ const QUESTIONS = [
   },
   {
     code: 'pp', dbKey: 'preferred_property_types',
-    check: d => !d.preferred_property_types || d.preferred_property_types.length === 0,
+    check: d => d.type !== 'בעל נכס' && (!d.preferred_property_types || d.preferred_property_types.length === 0),
     question: '🏢 מה מחפש?',
     buttons: [
       [{ text: 'חנות', val: 'חנות' }, { text: 'מרלו"ג', val: 'מרלוג' }],
@@ -40,7 +39,8 @@ const QUESTIONS = [
     isArray: true
   },
   {
-    code: 'dt', dbKey: 'preferred_deal_type', check: d => !d.preferred_deal_type,
+    code: 'dt', dbKey: 'preferred_deal_type',
+    check: d => d.type !== 'בעל נכס' && !d.preferred_deal_type,
     question: '🔑 שכירות או רכישה?',
     buttons: [
       [{ text: 'שכירות', val: 'שכירות' }, { text: 'רכישה', val: 'רכישה' }, { text: 'שניהם', val: 'שניהם' }]
@@ -48,7 +48,7 @@ const QUESTIONS = [
   },
   {
     code: 'pa', dbKey: 'preferred_areas',
-    check: d => !d.preferred_areas || d.preferred_areas.length === 0,
+    check: d => d.type !== 'בעל נכס' && (!d.preferred_areas || d.preferred_areas.length === 0),
     question: '📍 אזור?',
     buttons: [
       [{ text: 'תל אביב', val: 'תל אביב' }, { text: 'ירושלים', val: 'ירושלים' }],
@@ -59,7 +59,8 @@ const QUESTIONS = [
     isArray: true, customPrompt: '✏️ כתוב אזור/עיר:'
   },
   {
-    code: 'bg', dbKey: 'budget_max', check: d => !d.budget_max || d.budget_max === 0,
+    code: 'bg', dbKey: 'budget_max',
+    check: d => d.type !== 'בעל נכס' && (!d.budget_max || d.budget_max === 0),
     question: '💰 תקציב?',
     buttons: [
       [{ text: 'עד 5K/חודש', val: '5000' }, { text: 'עד 10K/חודש', val: '10000' }],
@@ -90,7 +91,8 @@ const QUESTIONS = [
     buttons: [], freeText: true
   },
   {
-    code: 'rl', dbKey: 'readiness_level', check: d => !d.readiness_level,
+    code: 'rl', dbKey: 'readiness_level',
+    check: d => d.type !== 'בעל נכס' && !d.readiness_level,
     question: '⏱️ מוכנות?',
     buttons: [
       [{ text: 'מחפש פעיל', val: 'מחפש פעיל' }, { text: 'בודק שוק', val: 'בודק שוק' }],
@@ -127,7 +129,7 @@ function register(bot, sessions) {
       let companyId = null;
       if (d.company) {
         try {
-          const companies = await crm.request('GET', `/api/companies?search=${encodeURIComponent(d.company)}`);
+          const companies = await crm.searchCompanies(d.company);
           if (Array.isArray(companies) && companies.length > 0) {
             companyId = companies[0].id;
           } else {
@@ -154,8 +156,33 @@ function register(bot, sessions) {
         contact_role: d.contact_role || '',
         notes: d.notes || '', status: 'פעיל'
       });
-      if (result.id) bot.sendMessage(chatId, `✅ *${d.first_name} ${d.last_name}* נוסף ל-CRM!`, { parse_mode: 'Markdown' });
-      else throw new Error(result.error || 'שגיאה');
+
+      if (!result.id) throw new Error(result.error || 'שגיאה');
+
+      const fullName = `${d.first_name||''} ${d.last_name||''}`.trim();
+      bot.sendMessage(chatId, `✅ *${fullName}* נוסף ל-CRM!`, { parse_mode: 'Markdown' });
+
+      // ── הצעה לפתוח נכס לבעלים ────────────────────────────────────
+      if (d.type === 'בעל נכס') {
+        const sent = await bot.sendMessage(chatId,
+          `🏢 *${fullName}* הוא בעל נכס.\nלרשום עכשיו את הנכס שלו?`, {
+          parse_mode: 'Markdown',
+          reply_markup: { inline_keyboard: [
+            [
+              { text: '🔑 השכרה', callback_data: `OWN_NEW:${result.id}:השכרה` },
+              { text: '💰 מכירה', callback_data: `OWN_NEW:${result.id}:מכירה` }
+            ],
+            [{ text: '❌ לא עכשיו', callback_data: 'CANCEL' }]
+          ]}
+        });
+        // שומר בסשן את שם הבעלים כדי שנוכל להעביר ל-properties
+        sessions[chatId] = {
+          ownerPending: { id: result.id, name: fullName },
+          lastMsg: sent.message_id
+        };
+        return; // לא מוחקים session
+      }
+
     } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
     delete sessions[chatId];
   }

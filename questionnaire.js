@@ -1,5 +1,6 @@
 // ═══════════════════════════════════════════════════════════════════════
-// questionnaire.js — מנוע שאלון כללי v2
+// questionnaire.js — מנוע שאלון כללי v3
+// תמיכה: buttons סטטי, buildButtons אסינכרוני, freeText, isArray, isNumber
 // ═══════════════════════════════════════════════════════════════════════
 
 const { removeKB, fmt } = require('./helpers');
@@ -12,19 +13,38 @@ function getNextQ(questions, data, skipped) {
 }
 
 async function askNext(bot, chatId, session, questions, onComplete) {
-  const q = getNextQ(questions, session.data, session.skipped);
-  if (!q) { onComplete(chatId, session); return; }
+  // לולאה: אם buildButtons מחזיר ריק — דלג אוטומטית לשאלה הבאה
+  while (true) {
+    const q = getNextQ(questions, session.data, session.skipped);
+    if (!q) { onComplete(chatId, session); return; }
 
-  session.waitingFor = q.code;
-  session.freeText = q.freeText || false;
+    session.waitingFor = q.code;
+    session.freeText = q.freeText || false;
 
-  const kb = q.buttons.map(row =>
-    row.map(b => ({ text: b.text, callback_data: `${q.code}:${b.val}` }))
-  );
-  kb.push([{ text: 'דלג ⏭️', callback_data: `${q.code}:SKIP` }]);
+    // כפתורים: סטטיים או דינמיים
+    let buttons = q.buttons || [];
+    if (q.buildButtons) {
+      try { buttons = await q.buildButtons(session.data) || []; }
+      catch (e) { console.error('buildButtons:', e.message); buttons = []; }
+    }
 
-  const sent = await bot.sendMessage(chatId, q.question, { reply_markup: { inline_keyboard: kb } });
-  session.lastMsg = sent.message_id;
+    // אם זו שאלה דינמית בלבד ללא תוצאות — דלג
+    if (q.buildButtons && buttons.length === 0 && !q.freeText) {
+      session.skipped = session.skipped || [];
+      if (!session.skipped.includes(q.code)) session.skipped.push(q.code);
+      session.waitingFor = null;
+      continue;
+    }
+
+    const kb = buttons.map(row =>
+      row.map(b => ({ text: b.text, callback_data: `${q.code}:${b.val}` }))
+    );
+    kb.push([{ text: 'דלג ⏭️', callback_data: `${q.code}:SKIP` }]);
+
+    const sent = await bot.sendMessage(chatId, q.question, { reply_markup: { inline_keyboard: kb } });
+    session.lastMsg = sent.message_id;
+    return;
+  }
 }
 
 function doSkip(bot, chatId, session, questions, onComplete) {
@@ -50,11 +70,18 @@ function handleAnswer(bot, chatId, session, questions, qIndex, code, value, onCo
     if (!session.data[q.dbKey]) session.data[q.dbKey] = [];
     session.data[q.dbKey].push(value);
   } else if (q.dbKey === 'budget_max' || q.dbKey === 'price' || q.dbKey === 'area' || q.dbKey === 'floor' ||
-             q.dbKey === 'parking' || q.dbKey === 'monthly_rent' || q.dbKey === 'budget_min') {
+             q.dbKey === 'parking' || q.dbKey === 'monthly_rent' || q.dbKey === 'budget_min' ||
+             q.dbKey === 'duration_min') {
     session.data[q.dbKey] = parseInt(value);
   } else {
     session.data[q.dbKey] = value;
   }
+
+  // אפשרות לשמור ערך נוסף (כמו label לתצוגה)
+  if (q.onAnswer) {
+    try { q.onAnswer(session.data, value); } catch (e) { /* ignore */ }
+  }
+
   session.waitingFor = null;
   askNext(bot, chatId, session, questions, onComplete);
   return true;
@@ -86,7 +113,7 @@ function handleText(bot, chatId, text, session, questions, qIndex, onComplete) {
     return true;
   }
 
-  // number parsing (budget, price, area)
+  // number parsing
   if (q.isNumber && session.freeText) {
     const num = text.replace(/[,₪\s]/g, '');
     let amount = parseFloat(num) || 0;

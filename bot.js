@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// bot.js — HAUSDORFF CRM Bot v5.0
-// ניתוב חכם + ברכות + תזכורות + כל הישויות
+// bot.js — HAUSDORFF CRM Bot v6.0
+// + פגישות, קישוריות בין ישויות, תזכורות פרואקטיביות (9/12/18)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const TelegramBot = require('node-telegram-bot-api');
@@ -19,18 +19,26 @@ const contactsMod = require('./contacts').register(bot, sessions);
 const propertiesMod = require('./properties').register(bot, sessions);
 const tasksMod = require('./tasks').register(bot, sessions);
 const companiesMod = require('./companies').register(bot, sessions);
+const meetingsMod = require('./meetings').register(bot, sessions);
 
-// ── תזכורות ───────────────────────────────────────────────────────────
+// ── מודול תזכורות ─────────────────────────────────────────────────────
 reminders.start(bot);
 
 // ── תפריט ראשי ────────────────────────────────────────────────────────
-const MAIN_MENU = [[
-  { text: '👤 איש קשר', callback_data: 'MENU:contact' },
-  { text: '🏢 נכס', callback_data: 'MENU:property' }
-],[
-  { text: '📋 משימה', callback_data: 'MENU:task' },
-  { text: '🏗️ חברה', callback_data: 'MENU:company' }
-]];
+const MAIN_MENU = [
+  [
+    { text: '👤 איש קשר', callback_data: 'MENU:contact' },
+    { text: '🏢 נכס', callback_data: 'MENU:property' }
+  ],
+  [
+    { text: '📋 משימה', callback_data: 'MENU:task' },
+    { text: '📅 פגישה', callback_data: 'MENU:meeting' }
+  ],
+  [
+    { text: '🏗️ חברה', callback_data: 'MENU:company' },
+    { text: '📊 משימות היום', callback_data: 'MENU:today' }
+  ]
+];
 
 async function showMainMenu(chatId, text) {
   const sent = await bot.sendMessage(chatId, text || '👋 מה תרצה לעשות?', {
@@ -70,6 +78,7 @@ bot.on('message', async msg => {
     else if (s.mode === 'property') handled = propertiesMod.handleText(chatId, text, s);
     else if (s.mode === 'task') handled = tasksMod.handleText(chatId, text, s);
     else if (s.mode === 'company') handled = companiesMod.handleText(chatId, text, s);
+    else if (s.mode === 'meeting') handled = meetingsMod.handleText(chatId, text, s);
     if (handled) return;
   }
 
@@ -84,6 +93,12 @@ bot.on('message', async msg => {
   // טלפון → איש קשר
   if (/0\d{1,2}[-\s]?\d{7,8}/.test(text)) {
     contactsMod.startFromText(chatId, text);
+    return;
+  }
+
+  // פגישה
+  if (/^(פגישה|meeting)/i.test(text)) {
+    meetingsMod.startFromText(chatId, text);
     return;
   }
 
@@ -120,10 +135,31 @@ bot.on('callback_query', async query => {
 
   bot.answerCallbackQuery(query.id);
 
+  // ── NOOP — כפתור לא פעיל ──
+  if (action === 'NOOP') return;
+
+  // ── ביטול ──
   if (action === 'CANCEL') {
     removeKB(bot, chatId, msgId);
     delete sessions[chatId];
     bot.sendMessage(chatId, '🚫 בוטל.');
+    return;
+  }
+
+  // ── פעולות על משימות (תזכורת/רשימה) — אינטראקציה גלובלית ──
+  if (action.startsWith('TASK_DONE:') || action.startsWith('TASK_POSTPONE:')) {
+    await reminders.handleTaskAction(bot, chatId, msgId, action);
+    return;
+  }
+
+  // ── פתיחת רישום נכס לבעלים (מ-contacts) ──
+  if (action.startsWith('OWN_NEW:')) {
+    removeKB(bot, chatId, msgId);
+    const parts = action.split(':');
+    const ownerId = parts[1];
+    const dealType = parts[2] || '';
+    const ownerName = (s && s.ownerPending && s.ownerPending.name) || 'בעל הנכס';
+    propertiesMod.startWithOwner(chatId, ownerId, ownerName, dealType);
     return;
   }
 
@@ -142,9 +178,15 @@ bot.on('callback_query', async query => {
     } else if (choice === 'task') {
       if (pending) tasksMod.startFromText(chatId, pending);
       else tasksMod.startEmpty(chatId);
+    } else if (choice === 'meeting') {
+      if (pending) meetingsMod.startFromText(chatId, pending);
+      else meetingsMod.startEmpty(chatId);
     } else if (choice === 'company') {
       if (pending) companiesMod.startFromText(chatId, pending);
       else companiesMod.startEmpty(chatId);
+    } else if (choice === 'today') {
+      delete sessions[chatId];
+      reminders.showTodayTasks(bot, chatId);
     }
     return;
   }
@@ -158,6 +200,7 @@ bot.on('callback_query', async query => {
   else if (s.mode === 'property') handled = propertiesMod.handleCallback(chatId, msgId, action, s);
   else if (s.mode === 'task') handled = tasksMod.handleCallback(chatId, msgId, action, s);
   else if (s.mode === 'company') handled = companiesMod.handleCallback(chatId, msgId, action, s);
+  else if (s.mode === 'meeting') handled = meetingsMod.handleCallback(chatId, msgId, action, s);
 
   if (!handled) removeKB(bot, chatId, msgId);
 });
@@ -169,5 +212,5 @@ process.on('uncaughtException', e => console.error('Err:', e));
 console.log(`🤖 HAUSDORFF CRM Bot v${config.BOT_VERSION}`);
 console.log(`📡 ${config.CRM_API_URL}`);
 console.log(`🧠 ${config.ANTHROPIC_API_KEY ? 'Claude AI' : 'Regex'}`);
-console.log(`📦 מודולים: contacts, properties, tasks, companies`);
-console.log(`⏰ תזכורות: פעיל`);
+console.log(`📦 מודולים: contacts, properties, tasks, meetings, companies`);
+console.log(`⏰ תזכורות: 09:00 / 12:00 / 18:00 + פר-משימה`);
