@@ -1,7 +1,7 @@
 {
-  "name": "hausdorff-telegram-bot",
-  "version": "1.0.0",
-  "description": "Telegram bot for Hausdorff CRM - AI-powered data entry",
+  "name": "hausdorff-crm-bot",
+  "version": "4.0.0",
+  "description": "Hausdorff CRM Telegram Bot — modular architecture",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
