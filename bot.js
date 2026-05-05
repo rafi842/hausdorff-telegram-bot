@@ -1,12 +1,14 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// bot.js — HAUSDORFF CRM Bot v6.0
-// + פגישות, קישוריות בין ישויות, תזכורות פרואקטיביות (9/12/18)
+// bot.js — HAUSDORFF CRM Bot v5.1
+// ניתוב חכם + ברכות + תזכורות + לידים + ווב-הוקים
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const TelegramBot = require('node-telegram-bot-api');
 const config = require('./config');
 const { isAllowed, removeKB, isGreeting } = require('./helpers');
 const reminders = require('./reminders');
+const leadsMod   = require('./leads');
+const webhook    = require('./webhook');
 
 if (!config.TELEGRAM_TOKEN) { console.error('❌ חסר TELEGRAM_BOT_TOKEN!'); process.exit(1); }
 
@@ -14,31 +16,26 @@ const bot = new TelegramBot(config.TELEGRAM_TOKEN, { polling: true });
 const sessions = {};
 
 // ── מודולים ───────────────────────────────────────────────────────────
-const startMod = require('./start'); startMod.register(bot);
-const contactsMod = require('./contacts').register(bot, sessions);
+const startMod      = require('./start'); startMod.register(bot);
+const contactsMod   = require('./contacts').register(bot, sessions);
 const propertiesMod = require('./properties').register(bot, sessions);
-const tasksMod = require('./tasks').register(bot, sessions);
-const companiesMod = require('./companies').register(bot, sessions);
-const meetingsMod = require('./meetings').register(bot, sessions);
+const tasksMod      = require('./tasks').register(bot, sessions);
+const companiesMod  = require('./companies').register(bot, sessions);
 
-// ── מודול תזכורות ─────────────────────────────────────────────────────
+// ── תזכורות ───────────────────────────────────────────────────────────
 reminders.start(bot);
 
+// ── ווב-הוק לקבלת לידים מה-CRM ────────────────────────────────────────
+webhook.start(bot, leadsMod);
+
 // ── תפריט ראשי ────────────────────────────────────────────────────────
-const MAIN_MENU = [
-  [
-    { text: '👤 איש קשר', callback_data: 'MENU:contact' },
-    { text: '🏢 נכס', callback_data: 'MENU:property' }
-  ],
-  [
-    { text: '📋 משימה', callback_data: 'MENU:task' },
-    { text: '📅 פגישה', callback_data: 'MENU:meeting' }
-  ],
-  [
-    { text: '🏗️ חברה', callback_data: 'MENU:company' },
-    { text: '📊 משימות היום', callback_data: 'MENU:today' }
-  ]
-];
+const MAIN_MENU = [[
+  { text: '👤 איש קשר', callback_data: 'MENU:contact' },
+  { text: '🏢 נכס',     callback_data: 'MENU:property' }
+],[
+  { text: '📋 משימה',   callback_data: 'MENU:task' },
+  { text: '🏗️ חברה',   callback_data: 'MENU:company' }
+]];
 
 async function showMainMenu(chatId, text) {
   const sent = await bot.sendMessage(chatId, text || '👋 מה תרצה לעשות?', {
@@ -52,6 +49,11 @@ async function showMainMenu(chatId, text) {
 bot.on('message', async msg => {
   if (!isAllowed(msg.from.id)) return;
   const chatId = msg.chat.id;
+
+  // רישום הסוכן לצורך קבלת הודעות ליד
+  const agentName = [msg.from.first_name, msg.from.last_name].filter(Boolean).join(' ')
+    || msg.from.username || `סוכן ${chatId}`;
+  leadsMod.registerAgent(chatId, agentName);
 
   // רישום לתזכורות
   reminders.registerChat(chatId);
@@ -74,11 +76,16 @@ bot.on('message', async msg => {
   // ── תשובה לשאלה פעילה ──
   if (s && s.waitingFor) {
     let handled = false;
-    if (s.mode === 'contact') handled = contactsMod.handleText(chatId, text, s);
+    if      (s.mode === 'contact')  handled = contactsMod.handleText(chatId, text, s);
     else if (s.mode === 'property') handled = propertiesMod.handleText(chatId, text, s);
-    else if (s.mode === 'task') handled = tasksMod.handleText(chatId, text, s);
-    else if (s.mode === 'company') handled = companiesMod.handleText(chatId, text, s);
-    else if (s.mode === 'meeting') handled = meetingsMod.handleText(chatId, text, s);
+    else if (s.mode === 'task')     handled = tasksMod.handleText(chatId, text, s);
+    else if (s.mode === 'company')  handled = companiesMod.handleText(chatId, text, s);
+    if (handled) return;
+  }
+
+  // ── תשובה לשאלון ליד (freeText ללא waitingFor) ──
+  if (s && s.mode === 'lead' && s.freeText) {
+    const handled = leadsMod.handleText(bot, chatId, text, s, sessions);
     if (handled) return;
   }
 
@@ -96,19 +103,13 @@ bot.on('message', async msg => {
     return;
   }
 
-  // פגישה
-  if (/^(פגישה|meeting)/i.test(text)) {
-    meetingsMod.startFromText(chatId, text);
-    return;
-  }
-
   // משימה / תזכורת
   if (/^(משימה|תזכורת|לעשות|להתקשר|לשלוח|task|todo)/i.test(text)) {
     tasksMod.startFromText(chatId, text);
     return;
   }
 
-  // נכס / חנות / מרלוג
+  // נכס
   if (/^(נכס|חנות|מרלוג|מרלו"ג|משרד|קרקע|מבנה|מרכז מסחרי)/i.test(text)) {
     propertiesMod.startFromText(chatId, text);
     return;
@@ -121,7 +122,9 @@ bot.on('message', async msg => {
   }
 
   // לא זיהה → תפריט
-  showMainMenu(chatId, `📝 *"${text.slice(0, 40)}${text.length > 40 ? '...' : ''}"*\n\nמה תרצה לעשות?`);
+  showMainMenu(chatId, `📝 *"${text.slice(0, 40)}${text.length > 40 ? '...' : ''}"*
+
+מה תרצה לעשות?`);
   if (sessions[chatId]) sessions[chatId].pendingText = text;
   else sessions[chatId] = { pendingText: text };
 });
@@ -129,14 +132,11 @@ bot.on('message', async msg => {
 // ── כפתורים ───────────────────────────────────────────────────────────
 bot.on('callback_query', async query => {
   const chatId = query.message.chat.id;
-  const msgId = query.message.message_id;
+  const msgId  = query.message.message_id;
   const action = query.data;
-  const s = sessions[chatId];
+  const s      = sessions[chatId];
 
   bot.answerCallbackQuery(query.id);
-
-  // ── NOOP — כפתור לא פעיל ──
-  if (action === 'NOOP') return;
 
   // ── ביטול ──
   if (action === 'CANCEL') {
@@ -146,71 +146,48 @@ bot.on('callback_query', async query => {
     return;
   }
 
-  // ── פעולות על משימות (תזכורת/רשימה) — אינטראקציה גלובלית ──
-  if (action.startsWith('TASK_DONE:') || action.startsWith('TASK_POSTPONE:')) {
-    await reminders.handleTaskAction(bot, chatId, msgId, action);
-    return;
-  }
-
-  // ── פתיחת רישום נכס לבעלים (מ-contacts) ──
-  if (action.startsWith('OWN_NEW:')) {
-    removeKB(bot, chatId, msgId);
-    const parts = action.split(':');
-    const ownerId = parts[1];
-    const dealType = parts[2] || '';
-    const ownerName = (s && s.ownerPending && s.ownerPending.name) || 'בעל הנכס';
-    propertiesMod.startWithOwner(chatId, ownerId, ownerName, dealType);
-    return;
+  // ── לידים (לפני בדיקת session כי LEAD_CLAIM נשלח ללא session) ──
+  if (action.startsWith('LEAD_')) {
+    const handled = await leadsMod.handleCallback(bot, chatId, msgId, action, sessions);
+    if (handled) return;
   }
 
   // ── תפריט ראשי ──
   if (action.startsWith('MENU:')) {
     removeKB(bot, chatId, msgId);
-    const choice = action.slice(5);
+    const choice  = action.slice(5);
     const pending = s?.pendingText || '';
 
-    if (choice === 'contact') {
-      if (pending) contactsMod.startFromText(chatId, pending);
-      else contactsMod.startEmpty(chatId);
-    } else if (choice === 'property') {
-      if (pending) propertiesMod.startFromText(chatId, pending);
-      else propertiesMod.startEmpty(chatId);
-    } else if (choice === 'task') {
-      if (pending) tasksMod.startFromText(chatId, pending);
-      else tasksMod.startEmpty(chatId);
-    } else if (choice === 'meeting') {
-      if (pending) meetingsMod.startFromText(chatId, pending);
-      else meetingsMod.startEmpty(chatId);
-    } else if (choice === 'company') {
-      if (pending) companiesMod.startFromText(chatId, pending);
-      else companiesMod.startEmpty(chatId);
-    } else if (choice === 'today') {
-      delete sessions[chatId];
-      reminders.showTodayTasks(bot, chatId);
-    }
+    if      (choice === 'contact')  pending ? contactsMod.startFromText(chatId, pending)   : contactsMod.startEmpty(chatId);
+    else if (choice === 'property') pending ? propertiesMod.startFromText(chatId, pending) : propertiesMod.startEmpty(chatId);
+    else if (choice === 'task')     pending ? tasksMod.startFromText(chatId, pending)      : tasksMod.startEmpty(chatId);
+    else if (choice === 'company')  pending ? companiesMod.startFromText(chatId, pending)  : companiesMod.startEmpty(chatId);
     return;
   }
 
   if (!s) { removeKB(bot, chatId, msgId); return; }
   if (s.lastMsg && msgId !== s.lastMsg) { removeKB(bot, chatId, msgId); return; }
 
-  // ניתוב לפי מודול
+  // ── ניתוב לפי מודול ──
   let handled = false;
-  if (s.mode === 'contact') handled = contactsMod.handleCallback(chatId, msgId, action, s);
+  if      (s.mode === 'contact')  handled = contactsMod.handleCallback(chatId, msgId, action, s);
   else if (s.mode === 'property') handled = propertiesMod.handleCallback(chatId, msgId, action, s);
-  else if (s.mode === 'task') handled = tasksMod.handleCallback(chatId, msgId, action, s);
-  else if (s.mode === 'company') handled = companiesMod.handleCallback(chatId, msgId, action, s);
-  else if (s.mode === 'meeting') handled = meetingsMod.handleCallback(chatId, msgId, action, s);
+  else if (s.mode === 'task')     handled = tasksMod.handleCallback(chatId, msgId, action, s);
+  else if (s.mode === 'company')  handled = companiesMod.handleCallback(chatId, msgId, action, s);
 
   if (!handled) removeKB(bot, chatId, msgId);
 });
 
 // ── שגיאות ────────────────────────────────────────────────────────────
-bot.on('polling_error', e => { if (!e.message?.includes('ETELEGRAM') && !e.message?.includes('409')) console.error('Poll:', e.message); });
+bot.on('polling_error', e => {
+  if (!e.message?.includes('ETELEGRAM') && !e.message?.includes('409'))
+    console.error('Poll:', e.message);
+});
 process.on('uncaughtException', e => console.error('Err:', e));
 
 console.log(`🤖 HAUSDORFF CRM Bot v${config.BOT_VERSION}`);
 console.log(`📡 ${config.CRM_API_URL}`);
 console.log(`🧠 ${config.ANTHROPIC_API_KEY ? 'Claude AI' : 'Regex'}`);
-console.log(`📦 מודולים: contacts, properties, tasks, meetings, companies`);
-console.log(`⏰ תזכורות: 09:00 / 12:00 / 18:00 + פר-משימה`);
+console.log(`📦 מודולים: contacts, properties, tasks, companies, leads`);
+console.log(`⏰ תזכורות: פעיל`);
+console.log(`🔔 לידים: פעיל`);
